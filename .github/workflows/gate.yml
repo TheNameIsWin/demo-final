@@ -1,0 +1,120 @@
+name: smart-gate
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  checks: read
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect changed files
+        id: changes
+        run: |
+          echo "🔍 Detecting changed files..."
+          git fetch origin main
+          git diff --name-only origin/main > changed_files.txt
+          cat changed_files.txt
+
+      - name: Decide required workflows dynamically
+        id: require
+        run: |
+          REQUIRED=""
+
+          echo "🔍 Analyzing changes..."
+          cat changed_files.txt
+
+          # API Changes
+          if grep -q "^sync-api/" changed_files.txt; then
+            echo "API changed → require check-api, web-api-build"
+            REQUIRED="$REQUIRED check-api web-api-build"
+          fi
+
+          # WEB Changes
+          if grep -q "^sync-web/" changed_files.txt; then
+            echo "WEB changed → require web-lint, web-e2e"
+            REQUIRED="$REQUIRED web-lint web-e2e"
+          fi
+
+          # ANDROID Changes
+          if grep -q "^mobiles/android/" changed_files.txt; then
+            echo "Android changed → require android-ci, android-build"
+            REQUIRED="$REQUIRED android-ci android-build"
+          fi
+
+          # IOS Changes
+          if grep -q "^mobiles/ios/" changed_files.txt; then
+            echo "iOS changed → require ios-ci, ios-build"
+            REQUIRED="$REQUIRED ios-ci ios-build"
+          fi
+
+          # If no code change → README-only PR or docs
+          if [ -z "$REQUIRED" ]; then
+            echo "No relevant code changes → No workflows required."
+          fi
+
+          echo "REQUIRED=$REQUIRED" >> $GITHUB_ENV
+          echo "Required workflows: $REQUIRED"
+
+      - name: Fetch check runs from GitHub
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f1)
+          REPO=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2)
+          SHA=${{ github.event.pull_request.head.sha }}
+
+          echo "🔍 Fetching check runs for commit $SHA ..."
+          curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/check-runs" \
+            > all_checks.json
+
+          echo "Available check runs:"
+          cat all_checks.json | jq -r '.check_runs[].name'
+
+      - name: Validate required workflows
+        run: |
+          echo "🔒 Validating required workflows..."
+
+          FAILED=()
+          MISSING=()
+
+          for WF in $REQUIRED; do
+            echo "Checking workflow: $WF"
+
+            MATCH=$(cat all_checks.json | jq -r --arg NAME "$WF" '.check_runs[] | select(.name == $NAME)')
+
+            if [ -z "$MATCH" ]; then
+              echo "❌ Missing workflow run: $WF"
+              MISSING+=("$WF")
+              continue
+            fi
+
+            RESULT=$(echo "$MATCH" | jq -r '.conclusion')
+
+            if [ "$RESULT" != "success" ]; then
+              echo "❌ Workflow failed/skipped: $WF → ($RESULT)"
+              FAILED+=("$WF")
+            fi
+          done
+
+          if [ ${#FAILED[@]} -ne 0 ] || [ ${#MISSING[@]} -ne 0 ]; then
+            echo "----------------------------------"
+            echo "❌ SMART GATE FAILED"
+            echo "Missing: ${MISSING[*]}"
+            echo "Failed: ${FAILED[*]}"
+            echo "----------------------------------"
+            exit 1
+          fi
+
+          echo "----------------------------------"
+          echo "✅ SMART GATE PASSED — SAFE TO MERGE"
+          echo "----------------------------------"

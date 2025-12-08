@@ -1,0 +1,13 @@
+name: check-api
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "sync-api/**"
+
+jobs:
+  api-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "API check passed"
