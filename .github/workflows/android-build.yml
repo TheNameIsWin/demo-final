@@ -2,8 +2,6 @@ name: android-build
 on:
   pull_request:
     branches: [ main ]
-    paths:
-      - "mobiles/android/**"
 
 jobs:
   android-build:
